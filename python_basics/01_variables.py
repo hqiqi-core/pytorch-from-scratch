@@ -28,4 +28,5 @@ config = {
     "batch_size": 32,
     "epochs": 50
 }
-print("config[lr]")
+
+print(config["lr"])
