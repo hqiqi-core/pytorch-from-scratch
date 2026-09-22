@@ -1,0 +1,6 @@
+normal
+myopia
+myopia
+high_myopia
+normal
+myopia
