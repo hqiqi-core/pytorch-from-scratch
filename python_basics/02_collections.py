@@ -175,14 +175,14 @@ print(filename1)
 
 # 任务 3：把文件名按照 _ 分开
 str = []   # 最好不要用str做变量名，因为是一个内置类型
-str = filename.split("_")
+str = filename.split("_")    
 print(str)
 
 # 任务 4：自己再创建一个字符串
 category = "  High_Myopia  "
 str1 = category.strip(category.lower())   # strip是去掉首尾所有出现在 chars 中的字符。默认 strip() 去空白
 print(str1)
-str1 = category.strip().lower() #改正
+str1 = category.strip().lower() #改正   strip(chars)  意思是从字符串两端不断删除 chars 中出现的字符
 print(str1)
 
 # 文件读取
