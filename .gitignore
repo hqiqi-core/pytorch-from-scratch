@@ -30,3 +30,6 @@ dist/
 *.pt
 *.pth
 *.ckpt
+
+
+data/
