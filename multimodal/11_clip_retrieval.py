@@ -162,11 +162,12 @@ def retrieve_topk(
     if image_features.shape[0] != len(image_paths):
         raise ValueError("feature count and metadata count do not match")
     
+    if top_k <= 0:
+            raise ValueError("top_k must be greater than 0")
     
     similarities = query_feature @ image_features.T
 
-    if top_k <= 0:
-        raise ValueError("top_k must be greater than 0")
+    
     actual_k = min(top_k, len(image_paths))
 
     scores, indices = torch.topk(
@@ -186,8 +187,6 @@ def retrieve_topk(
 
 def main():
     args = parse_args()
-    if not args.query.strip():
-        raise ValueError("query 不能为空")
 
     if not args.query.strip():
         raise ValueError("query must not be empty")
