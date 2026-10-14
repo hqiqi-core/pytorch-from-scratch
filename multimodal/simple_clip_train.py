@@ -545,6 +545,7 @@ def train_one_epoch(
     for batch in dataloader:
         images = batch["image"].to(device)
         input_ids = batch["input_ids"].to(device)
+        optimizer.zero_grad(set_to_none=True)
 
         logits, image_features, text_features = model(images, input_ids)
         loss = clip_contrastive_loss(logits)
@@ -557,9 +558,12 @@ def train_one_epoch(
 
         total_loss += loss.item()
         num_batches += 1
-        optimizer.zero_grad(set_to_none=True)
 
-    return total_loss / max(num_batches, 1)
+    if num_batches == 0:
+        raise ValueError("dataloader must contain at least one batch")
+        
+
+    return total_loss / num_batches
 
 
 # 验证配对准确率——"训练完了怎么知道学没学会"
@@ -568,6 +572,8 @@ def train_one_epoch(
 配对准确率要在所有样本之间比较
 argmax(dim=1)：消掉列这一维，保留行 → 每行输出一个下标 → "每张图选文本"
 argmax(dim=0)：消掉行这一维，保留列 → 每列输出一个下标 → "每条文选图片"
+需要能处理不同batch 而不只是处理整个数据集
+
 """
 @torch.no_grad()
 def evaluate_alignment(
@@ -576,33 +582,113 @@ def evaluate_alignment(
     device: torch.device,
 ) -> dict[str, float]:
     model.eval()
+    image_features, text_features = encode_dataset(
+        model,
+        dataloader,
+        device,
+    )
 
-    # 约定：dataloader 只有一个 batch，且包含全部样本
-    batch = next(iter(dataloader))
+    scale = model.logit_scale.exp().clamp(max=100.0)
 
-    images = batch["image"].to(device)
-    input_ids = batch["input_ids"].to(device)
+    logits = scale * image_features @ text_features.T
 
-    logits, _, _ = model(images, input_ids)   # [N, N]
+    labels = torch.arange(logits.shape[0], device=logits.device)
 
-    N = logits.shape[0]
-    labels = torch.arange(N, device=device)
+    i2t_predictions = logits.argmax(dim=1)
+    t2i_predictions = logits.argmax(dim=0)
 
-    # 图找文：每行取最大
-    i2t_predictions = logits.argmax(dim=1)    # [N]  argmax 返回的是下标
-    # 文找图：每列取最大
-    t2i_predictions = logits.argmax(dim=0)    # [N]
+    i2t_accuracy = (
+        i2t_predictions == labels
+    ).float().mean().item()
 
-    i2t_acc = (i2t_predictions == labels).float().mean().item()
-    t2i_acc = (t2i_predictions == labels).float().mean().item()
+    t2i_accuracy = (
+        t2i_predictions == labels
+    ).float().mean().item()
 
     return {
-        "image_to_text_accuracy": i2t_acc,
-        "text_to_image_accuracy": t2i_acc,
+        "image_to_text_accuracy": i2t_accuracy,
+        "text_to_image_accuracy": t2i_accuracy,
     }
 
 
+    # # 约定：dataloader 只有一个 batch，且包含全部样本
+    # batch = next(iter(dataloader))
+
+    # images = batch["image"].to(device)
+    # input_ids = batch["input_ids"].to(device)
+
+    # logits, _, _ = model(images, input_ids)   # [N, N]
+
+    # N = logits.shape[0]
+    # labels = torch.arange(N, device=device)
+
+    # # 图找文：每行取最大
+    # i2t_predictions = logits.argmax(dim=1)    # [N]  argmax 返回的是下标
+    # # 文找图：每列取最大
+    # t2i_predictions = logits.argmax(dim=0)    # [N]
+
+    # i2t_acc = (i2t_predictions == labels).float().mean().item()
+    # t2i_acc = (t2i_predictions == labels).float().mean().item()
+
+    # return {
+    #     "image_to_text_accuracy": i2t_acc,
+    #     "text_to_image_accuracy": t2i_acc,
+    # }
+
+
+@torch.no_grad()
+def encode_dataset(
+    model: SimpleCLIP,
+    dataloader: DataLoader,
+    device: torch.device,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    切换 model.eval()。
+    遍历整个 DataLoader。
+    将每个 batch 移到 device。
+    分别调用 encode_image() 和 encode_text()。
+    将所有 batch feature 收集起来。
+    沿 batch 维拼接。
+    返回完整的 image/text feature。
+    """
+    model.eval()
+    all_image_features = []
+    all_text_features = []
+    for batch in dataloader:
+        images = batch["image"].to(device)
+        input_ids = batch["input_ids"].to(device)
+    
+        image_features = model.encode_image(images)
+        text_features = model.encode_text(input_ids)
+
+        all_image_features.append(image_features)
+        all_text_features.append(text_features)
+
+    if not all_image_features:
+        raise ValueError("dataloader must contain at least one batch")
+
+    image_features = torch.cat(all_image_features, dim=0)  # 错误写法 image_features=image_features.cat(dim=1)
+    text_features = torch.cat(all_text_features, dim=0)  # 沿 batch 维拼接
+    
+    if image_features.shape != text_features.shape:
+        raise RuntimeError(
+            "image and text feature shapes do not match: "
+            f"{tuple(image_features.shape)} vs "
+            f"{tuple(text_features.shape)}"
+        )
+
+    if not torch.isfinite(image_features).all():
+        raise RuntimeError("image features contain NaN or Inf")
+
+    if not torch.isfinite(text_features).all():
+        raise RuntimeError("text features contain NaN or Inf")
+
+    return image_features, text_features
+
+
+
 def parse_args() -> argparse.Namespace:
+
     p = argparse.ArgumentParser()
     p.add_argument("--data-dir", type=str, default="data/simple_clip")
     p.add_argument("--epochs", type=int, default=300)
@@ -628,10 +714,10 @@ def main():
 
     dataset = ImageTextDataset(samples, tokenizer, image_size=64)
     train_loader = DataLoader(
-        dataset, batch_size=args.batch_size, shuffle=True
+        dataset, batch_size=len(dataset), shuffle=True
     )
     eval_loader = DataLoader(
-        dataset, batch_size=len(dataset), shuffle=False
+        dataset, batch_size=4, shuffle=False
     )
 
     # 模型 + 优化器
