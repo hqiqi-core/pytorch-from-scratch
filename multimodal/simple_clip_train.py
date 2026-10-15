@@ -703,20 +703,52 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default="data/simple_clip/checkpoints/model.pt",
     )
+    p.add_argument(
+        "--resume",
+        type=str,
+        default=None,
+        help="Path to a training checkpoint",
+    )
     return p.parse_args()
 
 def main():
+    """
+    生成samples
+    → 从零创建或恢复tokenizer/model/optimizer
+    → 使用该tokenizer创建Dataset
+    → 创建DataLoader
+    → 训练
+    """
     args = parse_args()
     set_seed(args.seed)
     device = resolve_device(args.device)
     print(f"device: {device}")
 
-    # 数据
+    # 数据 无条件创建 resume或者从头开始都需要
     samples = create_toy_dataset(Path(args.data_dir))
     captions = [s["caption"] for s in samples]
-    tokenizer = SimpleTokenizer(captions, max_length=5)
-    print(f"vocab_size: {tokenizer.vocab_size}, pad_id: {tokenizer.pad_id}")
 
+    # 2. tokenizer / model / optimizer / start_epoch —— 分两条路径
+    if args.resume is None:
+        tokenizer = SimpleTokenizer(captions, max_length=5)
+        model = SimpleCLIP(
+            vocab_size=tokenizer.vocab_size,
+            pad_id=tokenizer.pad_id,
+            embed_dim=args.embed_dim,
+        ).to(device)
+        optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
+        start_epoch = 0
+    else:
+        from simple_clip_checkpoint import load_training_checkpoint
+        model, tokenizer, optimizer, start_epoch = load_training_checkpoint(
+            Path(args.resume), device,
+        )
+        print(f"Resumed completed epochs: {start_epoch}")
+        print(f"Next epoch: {start_epoch + 1}")
+        print(f"Target epochs: {args.epochs}")
+        print(f"Learning rate: {optimizer.param_groups[0]['lr']}")
+
+    # 3. 用最终确定的 tokenizer 建 Dataset / DataLoader
     dataset = ImageTextDataset(samples, tokenizer, image_size=64)
     train_loader = DataLoader(
         dataset, batch_size=args.batch_size, shuffle=True
@@ -725,14 +757,6 @@ def main():
         dataset, batch_size=4, shuffle=False
     )
 
-    # 模型 + 优化器
-    model = SimpleCLIP(
-        vocab_size=tokenizer.vocab_size,
-        pad_id=tokenizer.pad_id,
-        embed_dim=args.embed_dim,
-    ).to(device)
-
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
 
     # 保存第一层卷积权重副本
     parameter_before = (
@@ -751,7 +775,7 @@ def main():
 
     B = probe_images.shape[0]
     L = probe_input_ids.shape[1]
-    D = args.embed_dim
+    D = model.embed_dim  # 恢复时不能用 args.embed_dim，因为 checkpoint 里的维度可能和命令行默认值不同
 
     print("\n=== 第一个 batch ===")
     print("images shape:        ", probe_images.shape)
@@ -792,7 +816,11 @@ def main():
     )
 
     # ==== 训练 ====
-    for epoch in range(args.epochs):
+    if args.epochs <= start_epoch:  # 总轮数小于等于目前epoch  跑完了
+        raise ValueError(
+            f"epochs ({args.epochs}) must be greater than completed_epochs ({start_epoch})"
+        )
+    for epoch in range(start_epoch, args.epochs):
         train_loss = train_one_epoch(model, train_loader, optimizer, device)
 
         if (epoch + 1) % args.print_every == 0 or epoch == args.epochs - 1:
@@ -818,6 +846,8 @@ def main():
         Path(args.checkpoint_path),
         model,
         tokenizer,
+        optimizer=optimizer,
+        completed_epochs=args.epochs,
     )
 
     print(f"Saved checkpoint: {args.checkpoint_path}")

@@ -29,6 +29,11 @@ checkpoint = {
     },
     "model_state_dict": model.state_dict(),
 }
+为什么还需要 optimizer 状态？ Adam 更新参数还依赖历史
+仅加载模型，再创建一个新的 Adam，相当于保留模型权重，却重新开始积累优化历史。它可以继续训练，但后续更新不一定与中断前的轨迹相同
+每轮重建 Adam 不会变成 SGD，而是丢失 Adam 的历史状态，改变更新行为。
+
+
 """
 from pathlib import Path
 
@@ -41,6 +46,8 @@ def save_checkpoint(
     path: Path,
     model: SimpleCLIP,
     tokenizer: SimpleTokenizer,
+    optimizer: torch.optim.Optimizer | None = None,
+    completed_epochs: int = 0,
 ) -> None:
     """
     创建保存目录。
@@ -64,6 +71,14 @@ def save_checkpoint(
         },
         "model_state_dict": model.state_dict(),
     }
+    if completed_epochs < 0:
+        raise ValueError("completed_epochs must be non-negative")
+
+    checkpoint["completed_epochs"] = completed_epochs
+
+    if optimizer is not None:
+        checkpoint["optimizer_state_dict"] = optimizer.state_dict()
+
     torch.save(checkpoint, path)
 
 
@@ -115,4 +130,36 @@ def load_checkpoint(
     model = model.to(device)
     model.eval()
     return model, tokenizer
+
+# 训练加载函数
+def load_training_checkpoint(
+    path: Path,
+    device: torch.device,
+) -> tuple[
+    SimpleCLIP,
+    SimpleTokenizer,
+    torch.optim.Adam,
+    int,
+]:
+    """
+    恢复模型和tokenizer
+    → 读取训练字段
+    → 检查optimizer状态存在
+    → 为恢复后的模型创建Adam
+    → 加载Adam状态
+    → 返回completed_epochs
+    """
+    path = Path(path)
+    model, tokenizer = load_checkpoint(path, device)
+    checkpoint = torch.load(path,map_location="cpu",weights_only=True)
+    if "optimizer_state_dict" not in checkpoint:
+        raise ValueError(
+            "checkpoint has no optimizer state; cannot resume training"
+        )
+    # 创建 optimizer 时必须绑定恢复后的模型参数
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3) # 临时指定的 lr=1e-3 会被保存的 optimizer 参数组配置覆盖
+    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+    completed_epochs = checkpoint["completed_epochs"]
+
+    return model,tokenizer,optimizer,completed_epochs
 
