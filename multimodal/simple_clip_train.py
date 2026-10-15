@@ -698,6 +698,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--device", type=str, default="auto")
     p.add_argument("--print-every", type=int, default=25)
+    p.add_argument(
+        "--checkpoint-path",
+        type=str,
+        default="data/simple_clip/checkpoints/model.pt",
+    )
     return p.parse_args()
 
 def main():
@@ -714,7 +719,7 @@ def main():
 
     dataset = ImageTextDataset(samples, tokenizer, image_size=64)
     train_loader = DataLoader(
-        dataset, batch_size=len(dataset), shuffle=True
+        dataset, batch_size=args.batch_size, shuffle=True
     )
     eval_loader = DataLoader(
         dataset, batch_size=4, shuffle=False
@@ -797,6 +802,7 @@ def main():
                 f"i2t {metrics['image_to_text_accuracy']:.4f} | "
                 f"t2i {metrics['text_to_image_accuracy']:.4f}"
             )
+    
 
     # ==== 最终验证 ====
     parameter_after = (
@@ -806,6 +812,16 @@ def main():
 
     final_metrics = evaluate_alignment(model, eval_loader, device)
 
+    from simple_clip_checkpoint import save_checkpoint
+    
+    save_checkpoint(
+        Path(args.checkpoint_path),
+        model,
+        tokenizer,
+    )
+
+    print(f"Saved checkpoint: {args.checkpoint_path}")
+
     print("\n=== 最终结果 ===")
     print("first conv weight shape:", tuple(parameter_after.shape))
     print("device:                ", parameter_after.device)
@@ -813,6 +829,7 @@ def main():
     print("参数是否变化:          ", parameter_changed)
     print("最终 i2t 准确率:       ", final_metrics["image_to_text_accuracy"])
     print("最终 t2i 准确率:       ", final_metrics["text_to_image_accuracy"])
+
 
 
 if __name__ == "__main__":
