@@ -43,3 +43,71 @@
 - 保留镜像提供的 train / validation / test 划分。一张图片和它的 5 条描述必须在同一个划分。
 - 今天只读取 validation，不建立新的随机划分。
 - 保留来源划分不等于已经完成重复图片审计，后续正式实验再检查这一点。
+
+
+---
+
+## 实际运行结果（Day 18）
+
+### 运行命令
+
+```bash
+CUDA_VISIBLE_DEVICES=1 python multimodal/evaluate_flickr8k_clip.py \
+  --data-dir data/flickr8k \
+  --model-name openai/clip-vit-base-patch32 \
+  --batch-size 8 \
+  --device cuda \
+  --ks 1 3 5 \
+  --output-path data/flickr8k/clip_baseline.json
+```
+
+### 环境与数据
+
+- model_name: `openai/clip-vit-base-patch32`
+- dataset_id: `jxie/flickr8k`
+- dataset_revision: `56f58c967835f7c508d684f36bd7897cca9d7634`
+- split: validation
+- selection: first_n_without_shuffle
+- num_images: 20
+- num_captions: 100
+- metric_definition: at_least_one_annotated_positive_in_top_k
+
+### 特征检查
+
+- Image feature shape: (20, 512), device: cpu, dtype: torch.float32
+- Image norm min/max: 0.9999999 / 1.0000001
+- Text feature shape: (100, 512), device: cpu, dtype: torch.float32
+- Text norm min/max: 0.9999998 / 1.0000001
+
+范数接近 1，说明 L2 归一化生效。
+
+### 指标
+
+| 方向 | R@1 | R@3 | R@5 |
+|---|---|---|---|
+| i2t | 0.90 | 1.00 | 1.00 |
+| t2i | 0.83 | 1.00 | 1.00 |
+
+来源：`data/flickr8k/clip_baseline.json`（该文件位于被 git 忽略的 `data/` 下，不提交）
+
+### 案例分析：t2i R@1 失败
+
+- caption: `the boy laying face down on a skateboard is being pushed along the ground by another boy .`
+- 标注 image_id: `validation_000000`
+- Top-3 image_id 与相似度:
+  - `validation_000008`  0.3140
+  - `validation_000000`  0.3125
+  - `validation_000015`  0.2623
+
+观察正确图片 `validation_000000` 与 top-1 图片 `validation_000008` 后：
+
+- 混淆类型：<主体 / 动作 / 场景 / 细节，选一个或组合>
+- top-1 是否也存在合理语义相关性：<是 / 否，说明理由>
+- 补充：top-1 与正确图片的相似度差仅 0.0015，属于极接近的边界情况；R@3=1.0 说明正确答案仍在 top-3 内。
+
+### 备注
+
+- 本次运行仅记录模型名称，未固定模型 revision。同一模型名可能对应不同权重版本，正式对比实验前需固定 revision。
+- 数据与生成报告 `data/flickr8k/clip_baseline.json` 留在被忽略的 `data/` 中，仓库只保留协议文档。
+
+

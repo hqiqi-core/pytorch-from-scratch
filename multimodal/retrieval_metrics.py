@@ -104,3 +104,63 @@ def recall_at_k(
     """
 
     return hits.float().mean().item()   # .float() 把 True/False 转成 1.0/0.0  .mean() 求平均，就是命中比例  .item() 把标量 tensor 转成 Python 的 float
+
+
+# 根据ID实现多正例指标
+def recall_at_k_by_ids(
+    scores: torch.Tensor,
+    query_image_ids: list[str],
+    candidate_image_ids: list[str],   # 文本虽然有独立的 caption_id，这里传入的仍然是它所属图片的 image_id  候选ID允许重复，因为一张图片有多条描述
+    k: int,
+) -> float:
+    if not isinstance(scores, torch.Tensor):
+        raise ValueError("scores 必须是 torch.Tensor")
+    if scores.dim() != 2:
+        raise ValueError("scores 必须是二维 Tensor [Q, C]")
+    if scores.numel() == 0:
+        raise ValueError("scores 不能为空")
+    if not torch.is_floating_point(scores):
+        raise ValueError("scores 必须是浮点类型")
+    if torch.isnan(scores).any() or torch.isinf(scores).any():
+        raise ValueError("scores 不能包含 NaN 或 Inf")
+    if k <= 0:
+        raise ValueError("k 必须大于 0")
+
+    if len(query_image_ids) != scores.shape[0]:
+        raise ValueError(
+            f"query_image_ids 长度 {len(query_image_ids)} 与 scores.shape[0]={Q} 不一致"
+        )
+    if len(candidate_image_ids) != scores.shape[1]:
+        raise ValueError(
+            f"candidate_image_ids 长度 {len(candidate_image_ids)} 与 scores.shape[1]={C} 不一致"
+        )
+
+    candidate_id_set = set(candidate_image_ids)
+
+    if any(
+        image_id not in candidate_id_set
+        for image_id in query_image_ids
+    ):
+        raise ValueError("some queries have no positive candidate")
+    
+    actual_k = min(k, scores.shape[1])
+
+    topk_indices = scores.topk(
+        actual_k,
+        dim=1,
+    ).indices.cpu().tolist()
+
+    hits = []
+
+    for query_index, candidate_indices in enumerate(topk_indices):
+        query_id = query_image_ids[query_index]  
+
+        hit = any(
+            candidate_image_ids[index] == query_id
+            for index in candidate_indices
+        )
+
+        hits.append(hit)
+    
+
+    return sum(hits) / len(hits)

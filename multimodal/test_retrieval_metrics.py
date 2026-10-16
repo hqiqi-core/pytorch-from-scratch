@@ -1,6 +1,6 @@
 import torch
 
-from retrieval_metrics import recall_at_k
+from retrieval_metrics import recall_at_k, recall_at_k_by_ids
 """
 query	正确答案	排名	R@1	    R@2	    R@3
 0	    候选0	    第1名	命中	命中	命中
@@ -51,7 +51,36 @@ def test_recall_invalid_inputs():
         raise AssertionError("out-of-range target should raise ValueError")
 
 
+def test_recall_by_ids_multiple_positives():
+    scores = torch.tensor([
+        [0.8, 0.9, 0.7, 0.1],
+        [0.6, 0.5, 0.4, 0.3],
+    ])
+
+    image_ids = ["a", "b"]
+    caption_image_ids = ["a", "b", "a", "b"]
+
+    # 图找文
+    assert recall_at_k_by_ids(
+        scores, image_ids, caption_image_ids, 1
+    ) == 0.0
+
+    assert recall_at_k_by_ids(
+        scores, image_ids, caption_image_ids, 2
+    ) == 1.0
+
+    # 文找图
+    assert recall_at_k_by_ids(
+        scores.T, caption_image_ids, image_ids, 1
+    ) == 0.75
+
+    assert recall_at_k_by_ids(
+        scores.T, caption_image_ids, image_ids, 2
+    ) == 1.0
+
+
 if __name__ == "__main__":
     test_recall_known_ranks()
     test_recall_invalid_inputs()
+    test_recall_by_ids_multiple_positives()
     print("All retrieval metric tests passed.")
