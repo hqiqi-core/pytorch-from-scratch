@@ -128,11 +128,11 @@ def recall_at_k_by_ids(
 
     if len(query_image_ids) != scores.shape[0]:
         raise ValueError(
-            f"query_image_ids 长度 {len(query_image_ids)} 与 scores.shape[0]={Q} 不一致"
+            f"query_image_ids 长度 {len(query_image_ids)} 与 scores.shape[0] 不一致"
         )
     if len(candidate_image_ids) != scores.shape[1]:
         raise ValueError(
-            f"candidate_image_ids 长度 {len(candidate_image_ids)} 与 scores.shape[1]={C} 不一致"
+            f"candidate_image_ids 长度 {len(candidate_image_ids)} 与 scores.shape[1] 不一致"
         )
 
     candidate_id_set = set(candidate_image_ids)

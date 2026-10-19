@@ -1,4 +1,8 @@
+"""
+recall_at_k_by_ids() 是按 ID 匹配的，不是按位置匹配。所以如果你把文本特征和对应的 caption_image_ids 用同一个排列同步打乱，那么"每条文本的正例图片 ID"没变，只是顺序变了。
+数学上，打乱行列只是重排矩阵，每个 query 的候选集合完全一样，所以 R@K 必须逐位相等（在无并列边界的情况下）
 
+"""
 from pathlib import Path
 from typing import Sequence
 import torch
@@ -140,6 +144,16 @@ def parse_args():
         type=Path,
         default=Path("data/flickr8k/clip_baseline.json"),
     )
+    parser.add_argument(
+        "--check-order-invariance",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--compare-first-images",
+        type=int,
+        default=None,
+    )
+
     return parser.parse_args()
 
 
@@ -166,6 +180,23 @@ def find_t2i_r1_failure(similarities, caption_records, caption_image_ids, image_
                 ],
             }
     return None
+
+def evaluate_both_directions(scores, image_query_ids, caption_query_ids, ks):
+    """返回 (i2t, t2i) 两个 {R@k: value} 字典。
+
+    scores: [num_image_queries, num_caption_queries]
+    image_query_ids:    score 行对应的图片 ID
+    caption_query_ids:  score 列对应的文本所属图片 ID
+    """
+    i2t, t2i = {}, {}
+    for k in ks:
+        i2t[f"R@{k}"] = recall_at_k_by_ids(
+            scores, image_query_ids, caption_query_ids, k
+        )
+        t2i[f"R@{k}"] = recall_at_k_by_ids(
+            scores.T, caption_query_ids, image_query_ids, k
+        )
+    return i2t, t2i
 
 def main():
     args = parse_args()
@@ -202,17 +233,151 @@ def main():
     # ---- 相似度与双向指标 ----
     similarities = image_features @ text_features.T   # [num_images, num_captions]
 
-    i2t, t2i = {}, {}
-    for k in args.ks:
-        i2t[f"R@{k}"] = recall_at_k_by_ids(
-            similarities, image_ids, caption_image_ids, k
+    
+    # ---- 顺序不变性检查（先只做 i2t）----
+    if args.check_order_invariance:
+        # 造一个打乱顺序
+        generator = torch.Generator().manual_seed(42)  # 固定随机种子
+        permutation = torch.randperm(   # torch.randperm(100)：生成 0..99 的一个随机排列   结果 permutation 是个索引表：它说"新第 0 个位置放旧第 57 个，新第 1 个放旧第 3 个……"
+            len(caption_image_ids),    # 它不是打乱"值"，而是打乱"下标"
+            generator=generator,
         )
-        t2i[f"R@{k}"] = recall_at_k_by_ids(
-            similarities.T, caption_image_ids, image_ids, k
+
+        shuffled_text_features = text_features[permutation]
+        shuffled_caption_image_ids = [
+            caption_image_ids[index]
+            for index in permutation.tolist()
+        ]
+
+        shuffled_similarities = (
+            image_features @ shuffled_text_features.T
         )
+
+        print("Order invariance check:")
+        for k in args.ks:
+            # ---- i2t ----
+            i2t_original = recall_at_k_by_ids(
+                similarities, image_ids, caption_image_ids, k
+            )
+            i2t_shuffled = recall_at_k_by_ids(
+                shuffled_similarities, image_ids,
+                shuffled_caption_image_ids, k,
+            )
+            # ---- t2i ----
+            t2i_original = recall_at_k_by_ids(
+                similarities.T, caption_image_ids, image_ids, k
+            )
+            t2i_shuffled = recall_at_k_by_ids(
+                shuffled_similarities.T, shuffled_caption_image_ids,
+                image_ids, k,
+            )
+
+            print(
+                f"R@{k} i2t original={i2t_original:.6f} "
+                f"shuffled={i2t_shuffled:.6f} | "
+                f"t2i original={t2i_original:.6f} "
+                f"shuffled={t2i_shuffled:.6f}"
+            )
+            assert abs(i2t_original - i2t_shuffled) < 1e-8, (
+                f"i2t order invariance failed at R@{k}"
+            )
+            assert abs(t2i_original - t2i_shuffled) < 1e-8, (
+                f"t2i order invariance failed at R@{k}"
+            )
+
+    i2t,t2i = evaluate_both_directions(similarities, image_ids, caption_image_ids, args.ks)
 
     print("i2t:", i2t)
     print("t2i:", t2i)
+    comparison = None
+    if args.compare_first_images is not None:
+        n = args.compare_first_images
+        if n <= 0 or n > len(image_ids):
+            raise ValueError(
+                f"--compare-first-images must be in (0, {len(image_ids)}], got {n}"
+            )
+
+        # 前 n 张图，以及它们对应的所有文本（按 ID 找，不假设是前 n*5 条）
+        small_image_ids = image_ids[:n]
+        small_image_id_set = set(small_image_ids)
+        small_caption_indices = [   # 文本列表里的位置下标（整数）
+            index
+            for index, image_id in enumerate(caption_image_ids)
+            if image_id in small_image_id_set
+        ]
+        """
+        caption_image_ids 是什么——是"每条文本的正例图片 ID 列表"——文本 j 的正确答案就是 caption_image_ids[j] 这张图
+        第 j 个元素 = "第 j 条文本属于哪张图"
+        caption_image_ids =
+        [ "validation_000000",  # 第 0 条文本属于图 000000
+        "validation_000000",  # 第 1 条文本也属于图 000000（同一张图的第2条描述）
+        ...
+        "validation_000000",  # 第 4 条
+        "validation_000001",  # 第 5 条属于图 000001
+        ...
+        ]
+
+        """
+        small_caption_image_ids = [  # small_caption_image_ids 不是"要检索的图片列表"，而是"这 100 条文本各自的正例是哪张图" 
+            caption_image_ids[index]
+            for index in small_caption_indices
+        ]
+
+        # A：小库
+        small_scores = similarities[:n, small_caption_indices]   # [n, n*5]
+        small_i2t, small_t2i = evaluate_both_directions(
+            small_scores, small_image_ids, small_caption_image_ids, args.ks
+        )
+
+        # B：固定 query，扩大候选库
+        i2t_expanded_scores = similarities[:n, :]                # [n, all_captions]
+        i2t_exp_i2t = {}
+        for k in args.ks:
+            i2t_exp_i2t[f"R@{k}"] = recall_at_k_by_ids(
+                i2t_expanded_scores, small_image_ids, caption_image_ids, k
+            )
+        # t2i：固定文本 query，候选放到全部图片。单独算，不用函数里的 .T
+        t2i_expanded_scores = similarities[:, small_caption_indices].T  # [n*5, all_images]
+        t2i_exp_t2i = {}
+        for k in args.ks:
+            t2i_exp_t2i[f"R@{k}"] = recall_at_k_by_ids(
+                t2i_expanded_scores, small_caption_image_ids, image_ids, k
+            )
+
+        # C：完整子集（就是刚才已经算过的 i2t/t2i）
+
+        comparison = {
+            "compare_first_images": n,
+            "small": {
+                "num_image_queries": len(small_image_ids),
+                "num_caption_queries": len(small_caption_image_ids),
+                "i2t": small_i2t,
+                "t2i": small_t2i,
+            },
+            "expanded_candidates_fixed_queries": {
+                "i2t_num_image_queries": len(small_image_ids),
+                "i2t_num_caption_candidates": len(caption_image_ids),
+                "i2t": i2t_exp_i2t,
+                "t2i_num_caption_queries": len(small_caption_image_ids),
+                "t2i_num_image_candidates": len(image_ids),
+                "t2i": t2i_exp_t2i,
+            },
+            "full": {
+                "num_image_queries": len(image_ids),
+                "num_caption_queries": len(caption_image_ids),
+                "i2t": i2t,
+                "t2i": t2i,
+            },
+        }
+
+        print("\nComparison (A=small, B=expanded candidates, C=full):")
+        for name, block in [
+            ("A small", comparison["small"]),
+            ("B expanded", comparison["expanded_candidates_fixed_queries"]),
+            ("C full", comparison["full"]),
+        ]:
+            print(f"{name} i2t={block['i2t']}")
+            print(f"{name} t2i={block['t2i']}")
 
     # ---- 保存 JSON ----
     dataset_revision = "unknown"
@@ -230,8 +395,12 @@ def main():
         "num_captions": len(caption_records),
         "metric_definition": "at_least_one_annotated_positive_in_top_k",
         "i2t": i2t,
-        "t2i": t2i,
+        "t2i": t2i
     }
+    if comparison is not None:
+        result["comparison"] = comparison
+
+    
 
     args.output_path.parent.mkdir(parents=True, exist_ok=True)
     args.output_path.write_text(
@@ -254,6 +423,29 @@ def main():
         print("top-3:")
         for img_id, score in failure["top3"]:
             print(f"  {img_id}  {score:.4f}")
+
+    # 找 i2t：小库 R@1 对、扩大后 R@1 错的 query
+    small_top1 = small_scores.argmax(dim=1)          # [n]，小库每张图的 Top-1 列下标
+    expanded_top1 = i2t_expanded_scores.argmax(dim=1)  # [n]，扩大库每张图的 Top-1 列下标
+
+    for i in range(n):
+        small_col = small_top1[i].item()
+        small_hit = small_caption_image_ids[small_col] == small_image_ids[i]
+        expanded_col = expanded_top1[i].item()
+        expanded_hit = caption_image_ids[expanded_col] == small_image_ids[i]
+
+        if small_hit and not expanded_hit:
+            print("\n--- i2t R@1 案例：小库对、扩大后错 ---")
+            print("query image_id:", small_image_ids[i])
+            print("小库 Top-3:")
+            small_top3 = small_scores[i].topk(3)
+            for score, col in zip(small_top3.values.tolist(), small_top3.indices.tolist()):
+                print(f"  {small_caption_image_ids[col]}  {score:.4f}")
+            print("扩大库 Top-3:")
+            exp_top3 = i2t_expanded_scores[i].topk(3)
+            for score, col in zip(exp_top3.values.tolist(), exp_top3.indices.tolist()):
+                print(f"  {caption_image_ids[col]}  {score:.4f}")
+            break
 
 
 if __name__ == "__main__":
