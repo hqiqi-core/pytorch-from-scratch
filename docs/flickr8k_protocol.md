@@ -191,3 +191,31 @@ CUDA_VISIBLE_DEVICES=1 python multimodal/evaluate_flickr8k_clip.py \
 - 该采样只能避免"同一图片的其他描述进入当前 batch 当负例"，
   不能消除不同图片之间语义相似造成的假负例。
 - validation 用的 `data/flickr8k_val100` 不参与参数更新。
+
+## Day 21：投影层单步训练验证
+
+### 训练范围
+
+- 模型：`openai/clip-vit-base-patch32`（FP32）
+- 冻结：Vision Encoder、Text Encoder、`logit_scale`
+- 训练：`visual_projection`、`text_projection`
+- 可训练参数量：655360（512×768 + 512×512）
+- 优化器：AdamW，lr=1e-4，weight_decay=0.0
+- 数据：`data/flickr8k_train100`，batch_size=8，seed=42
+- 只执行 1 个 optimizer step，不涉及 epoch/checkpoint/resume
+
+### 实际结果（单 step）
+
+- 输入：pixel_values `[8,3,224,224]` float32，input_ids/attention_mask `[8,26]` int64，均在 cuda
+- image_embeds `[8,512]`，text_embeds `[8,512]`，logits `[8,8]`
+- Loss before update：0.1932（requires_grad=True）
+- 梯度范数：visual_projection 20.6687，text_projection 22.5209
+- 参数更新幅度（max |Δ|）：visual_projection 1.0e-4，text_projection 1.0e-4
+- 冻结编码器抽查参数不变：True
+- Loss after update（同一 batch，no_grad）：0.0479
+
+### 说明
+
+- 该结果只验证：梯度路径正确、指定参数被更新、冻结参数不变。
+- 同 batch loss 下降不作为泛化改善的证据；一次更新不保证 loss 下降，本次恰好下降。
+- 训练日志不提交（`data/` 被 git 忽略）；本段仅记录可复现的实验设置与关键数值。
