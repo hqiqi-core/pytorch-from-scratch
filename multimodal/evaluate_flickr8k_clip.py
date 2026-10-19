@@ -424,29 +424,36 @@ def main():
         for img_id, score in failure["top3"]:
             print(f"  {img_id}  {score:.4f}")
 
-    # 找 i2t：小库 R@1 对、扩大后 R@1 错的 query
-    small_top1 = small_scores.argmax(dim=1)          # [n]，小库每张图的 Top-1 列下标
-    expanded_top1 = i2t_expanded_scores.argmax(dim=1)  # [n]，扩大库每张图的 Top-1 列下标
+    # ---- 扩大候选库导致 i2t R@1 失败的案例（仅 --compare-first-images 时）----
+    if args.compare_first_images is not None:
+        # small_scores / i2t_expanded_scores / n 在此块内已定义
+        small_top1 = small_scores.argmax(dim=1)
+        expanded_top1 = i2t_expanded_scores.argmax(dim=1)
 
-    for i in range(n):
-        small_col = small_top1[i].item()
-        small_hit = small_caption_image_ids[small_col] == small_image_ids[i]
-        expanded_col = expanded_top1[i].item()
-        expanded_hit = caption_image_ids[expanded_col] == small_image_ids[i]
+        for i in range(n):
+            small_col = small_top1[i].item()
+            small_hit = small_caption_image_ids[small_col] == small_image_ids[i]
+            expanded_col = expanded_top1[i].item()
+            expanded_hit = caption_image_ids[expanded_col] == small_image_ids[i]
 
-        if small_hit and not expanded_hit:
-            print("\n--- i2t R@1 案例：小库对、扩大后错 ---")
-            print("query image_id:", small_image_ids[i])
-            print("小库 Top-3:")
-            small_top3 = small_scores[i].topk(3)
-            for score, col in zip(small_top3.values.tolist(), small_top3.indices.tolist()):
-                print(f"  {small_caption_image_ids[col]}  {score:.4f}")
-            print("扩大库 Top-3:")
-            exp_top3 = i2t_expanded_scores[i].topk(3)
-            for score, col in zip(exp_top3.values.tolist(), exp_top3.indices.tolist()):
-                print(f"  {caption_image_ids[col]}  {score:.4f}")
-            break
-
+            if small_hit and not expanded_hit:
+                print("\n--- i2t R@1 案例：小库对、扩大后错 ---")
+                print("query image_id:", small_image_ids[i])
+                print("小库 Top-3:")
+                small_top3 = small_scores[i].topk(3)
+                for score, col in zip(
+                    small_top3.values.tolist(),
+                    small_top3.indices.tolist(),
+                ):
+                    print(f"  {small_caption_image_ids[col]}  {score:.4f}")
+                print("扩大库 Top-3:")
+                exp_top3 = i2t_expanded_scores[i].topk(3)
+                for score, col in zip(
+                    exp_top3.values.tolist(),
+                    exp_top3.indices.tolist(),
+                ):
+                    print(f"  {caption_image_ids[col]}  {score:.4f}")
+                break
 
 if __name__ == "__main__":
     main()
