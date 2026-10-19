@@ -12,7 +12,7 @@ from huggingface_hub import HfApi  # 用来查数据集的真实 commit。因为
 
 
 DATASET_ID = "jxie/flickr8k"  # 数据集名字，只在写来源信息和加载时用一次。提成常量，改的时候只改一处
-SOURCE_SPLIT = "validation"  # 今天只读 validation。提成常量，后面路径、ID 前缀、source.json 都用它
+# SOURCE_SPLIT = "validation"  # 今天只读 validation。提成常量，后面路径、ID 前缀、source.json 都用它
 CAPTIONS_PER_IMAGE = 5  # Flickr8k 每张图固定 5 条描述。关键检查里会用它断言每张图恰好 5 条
 
 def parse_args() -> argparse.Namespace:
@@ -36,6 +36,12 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default="main",
         help="Dataset revision to resolve before loading.",
+    )
+    parser.add_argument(
+        "--split",
+        choices=["train", "validation", "test"],
+        default="validation",
+        help="Dataset split to take images from.",
     )
     return parser.parse_args()  # 解析命令行并返回
 
@@ -92,19 +98,19 @@ def main() -> None:
 
     if args.limit <= 0:  # 要求“limit > 0”。提前拦掉非法值，比后面取 0 张图片再报错更清楚
         raise ValueError(f"--limit must be positive, got {args.limit}")
-
+    source_split = args.split
     output_dir: Path = args.output_dir
-    image_dir = output_dir / "images" / SOURCE_SPLIT
+    image_dir = output_dir / "images" / source_split
     image_dir.mkdir(parents=True, exist_ok=True)
 
     revision = resolve_revision(DATASET_ID, args.revision)
     print(f"Dataset: {DATASET_ID}")
     print(f"Revision: {revision}")
-    print(f"Split: {SOURCE_SPLIT}")
+    print(f"Split: {source_split}")
 
     dataset = load_dataset(
         DATASET_ID,
-        split=SOURCE_SPLIT,
+        split=source_split,
         revision=revision,
         streaming=True,  # streaming=True：流式读取，适合只取少量样本
     )
@@ -115,8 +121,8 @@ def main() -> None:
  
     # take(args.limit)：只取前 N 个，不打乱  enumerate：拿到顺序索引 source_index
     for source_index, sample in enumerate(dataset.take(args.limit)):
-        image_id = f"{SOURCE_SPLIT}_{source_index:06d}"  # 本地 ID，形如 validation_000000。用本地 ID，不是原始 Flickr ID。来源靠 source.json 里的版本、划分和 source_index 追踪
-        relative_path = f"images/{SOURCE_SPLIT}/{image_id}.png"  
+        image_id = f"{source_split}_{source_index:06d}"  # 本地 ID，形如 validation_000000。用本地 ID，不是原始 Flickr ID。来源靠 source.json 里的版本、划分和 source_index 追踪
+        relative_path = f"images/{source_split}/{image_id}.png"  
         absolute_path = output_dir / relative_path  # metadata 里保存相对路径，实际写盘用 output_dir / relative_path。以后读取就是 data_root / record["image_path"]
 
         image = sample["image"].convert("RGB")  # 统一通道，避免灰度或带 alpha 的图片出问题 
@@ -127,7 +133,7 @@ def main() -> None:
                 "image_id": image_id,
                 "image_path": relative_path,
                 "source_index": source_index,
-                "split": SOURCE_SPLIT,
+                "split": source_split,
             }
         )
 
@@ -143,7 +149,7 @@ def main() -> None:
                     "caption_id": f"{image_id}_caption_{caption_index}",
                     "image_id": image_id,
                     "text": text.strip(),
-                    "split": SOURCE_SPLIT,
+                    "split": source_split,
                 }
             )
 
@@ -155,13 +161,13 @@ def main() -> None:
     check_records(image_records, caption_records)
     print("Image-caption mapping check passed.")
 
-    write_json(output_dir / "validation_images.json", image_records)
-    write_json(output_dir / "validation_captions.json", caption_records)
+    write_json(output_dir / f"{source_split}_images.json", image_records)
+    write_json(output_dir / f"{source_split}_captions.json", caption_records)
 
     source_info = {
         "dataset_id": DATASET_ID,
         "revision": revision,
-        "source_split": SOURCE_SPLIT,
+        "source_split": source_split,
         "selection": "first_n_without_shuffle",
         "num_images": len(image_records),
         "num_captions": len(caption_records),

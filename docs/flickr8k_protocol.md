@@ -176,3 +176,18 @@ CUDA_VISIBLE_DEVICES=1 python multimodal/evaluate_flickr8k_clip.py \
 ### 限制
 
 以上结果来自固定validation前100张图片，是小规模检索实验，不代表完整验证集性能。模型权重revision尚未固定，后续正式对比需补充。
+
+## Day 20：训练采样协议
+
+- 训练数据：`jxie/flickr8k` train 划分前 100 张图片、500 条描述，
+  revision `56f58c967835f7c508d684f36bd7897cca9d7634`，
+  选择方式 `first_n_without_shuffle`，存放于 `data/flickr8k_train100`。
+- Dataset 以图片为单位（长度 100），每次 `__getitem__` 从该图的 5 条描述中随机选 1 条。
+- DataLoader 使用 `shuffle=True` 无放回打乱，一个 epoch 内每条图片记录只出现一次，
+  因此同一 batch 内不会出现重复图片 ID。
+- batch size 为 8：12 个完整 batch + 最后 1 个 batch 为 4。
+- 训练标签使用对角线 `arange(B)`：batch 内第 i 张图与第 i 条所选描述配对。
+- validation 维持完整多描述评估，正例关系由 `image_id` 决定，不能用 `arange` 表达。
+- 该采样只能避免"同一图片的其他描述进入当前 batch 当负例"，
+  不能消除不同图片之间语义相似造成的假负例。
+- validation 用的 `data/flickr8k_val100` 不参与参数更新。
