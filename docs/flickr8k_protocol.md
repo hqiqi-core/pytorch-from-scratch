@@ -219,3 +219,49 @@ CUDA_VISIBLE_DEVICES=1 python multimodal/evaluate_flickr8k_clip.py \
 - 该结果只验证：梯度路径正确、指定参数被更新、冻结参数不变。
 - 同 batch loss 下降不作为泛化改善的证据；一次更新不保证 loss 下降，本次恰好下降。
 - 训练日志不提交（`data/` 被 git 忽略）；本段仅记录可复现的实验设置与关键数值。
+
+## Day 22：投影层短训练与固定验证集对照
+
+### 设置
+
+- 模型：`openai/clip-vit-base-patch32`，FP32
+- 模型 revision：未固定
+- 训练数据：`data/flickr8k_train100`（train 前 100 图 / 500 描述）
+- 验证数据：`data/flickr8k_val100`（validation 前 100 图 / 500 描述）
+- 数据 revision：`56f58c967835f7c508d684f36bd7897cca9d7634`
+- 只训练：`visual_projection`、`text_projection`
+- 冻结：Vision Encoder、Text Encoder、`logit_scale`
+- 优化器：AdamW，lr=1e-5，weight_decay=0
+- batch size=8，epochs=3，seed=42（每轮 13 step，共 39 step）
+
+### 每轮训练 loss（按样本加权平均）
+
+- Epoch 1：0.068080
+- Epoch 2：0.036743
+- Epoch 3：0.060702
+
+（batch 组成随 shuffle 和随机描述选择变化，epoch 间波动属正常；该值仅作训练过程监控，不等价于全库对比损失。）
+
+### Before / After（双向 R@K，100 图 / 500 描述）
+
+| 指标 | Before | After | 变化 |
+|---|---|---|---|
+| i2t R@1 | 0.870 | 0.880 | +0.010 |
+| i2t R@3 | 0.980 | 0.980 | 0 |
+| i2t R@5 | 0.980 | 0.990 | +0.010 |
+| t2i R@1 | 0.752 | 0.752 | 0 |
+| t2i R@3 | 0.922 | 0.922 | 0 |
+| t2i R@5 | 0.958 | 0.960 | +0.002 |
+
+Before 与 Day 19 完整子集结果逐位一致，说明评估协议与候选库一致。
+
+### 分析
+
+在 100 张训练图、3 epoch、lr=1e-5 的保守设置下，投影层微调未破坏预训练对齐：6 项指标 3 项持平、3 项微升，最大变化 +1 个百分点（100 个 query 中多命中 1 个），处于小规模子集的噪声范围内。因此本次结果**不足以证明**微调带来实质检索改善，只说明该设置下没有明显退化。训练 loss 在 epoch 间波动（0.068 → 0.037 → 0.061），与每轮 batch 组成变化一致，不作为泛化证据。
+
+### 产物
+
+- `data/experiments/clip_projection_day22/final_model.pt`（完整 state_dict）
+- `data/experiments/clip_projection_day22/results.json`（配置、loss、Before/After 指标）
+
+产物位于被 git 忽略的 `data/` 下，不提交。
