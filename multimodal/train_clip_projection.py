@@ -99,8 +99,8 @@ def save_results(model, args, train_losses, before_metrics, after_metrics, outpu
         output_dir / "final_model.pt",
     )
 
-    # 2) 报告
-    model_revision = getattr(model.config, "_commit_hash", None)
+    # 2) 报告   是这个模型对应的 配置对象（CLIPConfig 实例）里面存着模型结构、文本最大长度、logit_scale 初始值等 它同时可能带一个字段 _commit_hash，记录"这份权重是从哪个 commit 拉的"
+    model_revision = getattr(model.config, "_commit_hash", None)  
 
     results = {
         "model_name": args.model_name,
